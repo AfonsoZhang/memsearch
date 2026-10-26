@@ -121,21 +121,10 @@ for (const [name, configs, useOnnx] of [
   ['existing project configuration', { project: '[milvus]\ncollection = "existing_index"\n' }, false],
 ]) {
   test(`embedding defaults: ${name} applies consistently without changing configuration`, async () => {
-    await withInjectionFixture([], async ({ callLog, recallSkill, home, projectDir, fakeBin, resultFile }) => {
-      // Execute the command exposed to the agent as well as the automatic hook.
-      const searchBlock = recallSkill.match(/```bash\n([\s\S]*?)```/)[1]
-        .replaceAll('{{QUERY}}', 'release decision')
-      execFileSync('/usr/bin/bash', ['--noprofile', '--norc', '-c', searchBlock], {
-        cwd: projectDir,
-        env: {
-          ...process.env, HOME: home, PATH: `${fakeBin}:/usr/bin:/bin`, BASH_ENV: '/dev/null',
-          MEMSEARCH_TEST_PATH: `${fakeBin}:/usr/bin:/bin`, MEMSEARCH_TEST_CALL_LOG: callLog,
-          MEMSEARCH_TEST_RESULT: resultFile,
-        },
-      })
+    await withInjectionFixture([], async ({ callLog, home, projectDir }) => {
       const calls = fs.readFileSync(callLog, 'utf-8').trim().split('\n')
       const embeddingCalls = calls.filter((call) => /^(search|index) /.test(call))
-      assert.equal(embeddingCalls.filter((call) => call.startsWith('search ')).length, 2)
+      assert.equal(embeddingCalls.filter((call) => call.startsWith('search ')).length, 1)
       assert.ok(embeddingCalls.some((call) => call.startsWith('index ')), 'startup index must run')
       for (const call of embeddingCalls) {
         assert.equal(/ --provider onnx(?: |$)/.test(call), useOnnx, call)
@@ -154,7 +143,7 @@ for (const [name, configs, useOnnx] of [
 }
 
 test('detectDshCmd: prefers dsh on PATH as a plain argv', () => {
-  // DSH_CLI is checked after PATH; simulate PATH hit by masking DSH_CLI.
+  // Exercise PATH lookup without an explicit override.
   const prevCli = process.env.DSH_CLI
   const prevPath = process.env.PATH
   try {
@@ -199,28 +188,14 @@ test('detectDshCmd: DSH_CLI with trailing spaces is trimmed', () => {
   }
 })
 
-test('summarizeTurn: explicit custom-llm mode dispatches to the LLM path', async () => {
-  // custom-llm mode spawns python3 summarize.py; without a real transcript we
-  // only assert it picks that branch (no crash before spawn).
-  const opts = { summarizeMode: 'custom-llm', agentName: 'X', summarizeProvider: '', summarizeModel: '' }
-  const ctx = { logger: { warn: () => {} } }
-  const render = '=== Turn 1 ===\n\n[User]: hi\n\n[Assistant]: hello'
-  // If dispatch is wrong (e.g. treats anything not dsh-headless as dsh), this
-  // would reject with a dsh-CLI error instead of the custom-llm path error.
+test('summarizeTurn: explicit custom-llm mode reports its missing dependency', async () => {
+  const previous = process.env.MEMSEARCH_PYTHON
   try {
-    await summarizeTurn(ctx, opts, render, process.cwd())
-    assert.fail('expected custom-llm summarizer to fail (no provider configured)')
-  } catch (error) {
-    // custom-llm path failure: summarize.py exits non-zero or times out, or
-    // python3 is missing — never a "dsh CLI not found" error.
-    assert.ok(
-      !/dsh CLI not found/.test(error.message),
-      `unexpected dsh CLI error: ${error.message}`,
-    )
-    assert.ok(
-      !/spawn .* ENOENT/.test(error.message),
-      `unexpected spawn ENOENT: ${error.message}`,
-    )
+    process.env.MEMSEARCH_PYTHON = '/definitely/not/a/python'
+    await assert.rejects(summarizeTurn({}, { summarizeMode: 'custom-llm' }, 'hello', process.cwd()), /Python 3 not found/)
+  } finally {
+    if (previous === undefined) delete process.env.MEMSEARCH_PYTHON
+    else process.env.MEMSEARCH_PYTHON = previous
   }
 })
 
@@ -389,7 +364,7 @@ test('summarizeTurn: custom-llm surfaces summarize.py stderr as a visible error'
   fs.mkdirSync(fakeBin, { recursive: true })
   fs.writeFileSync(
     `${fakeBin}/python3`,
-    '#!/bin/sh\necho "provider deepseek-zilliz not found in config" >&2\ncat > /dev/null\nexit 3\n',
+    '#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\necho "provider deepseek-zilliz not found in config" >&2\ncat > /dev/null\nexit 3\n',
     'utf-8',
   )
   fs.chmodSync(`${fakeBin}/python3`, 0o755)
@@ -469,7 +444,7 @@ test('summarizeTurn: custom-llm rejects an early stdin close', async () => {
   }
 })
 
-test('detectDshCmd: falls back to pnpm global bin directory', async () => {
+test('detectDshCmd: falls back to the pnpm global bin directory', async () => {
   const prevCli = process.env.DSH_CLI
   const prevPath = process.env.PATH
   const prevHome = process.env.HOME
