@@ -1,0 +1,60 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 1 * * *" # 09:23 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'AfonsoZhang/memsearch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream main
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/zilliztech/memsearch.git
+          git fetch --no-tags upstream main
+          upstream_sha="$(git rev-parse upstream/main)"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No new upstream commits." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit upstream/main
+          git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Merged upstream $upstream_sha into fork main at $(git rev-parse HEAD)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run CI on the updated fork
+        if: steps.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A push with GITHUB_TOKEN does not trigger push workflows.
+          # Explicit dispatch creates CI runs on the updated main commit.
+          gh workflow run test.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run lint.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Dispatched Test and Lint on main. Their results are separate from sync success." >> "$GITHUB_STEP_SUMMARY"
