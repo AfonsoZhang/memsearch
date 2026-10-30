@@ -19,34 +19,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Sync fork through the GitHub API
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          ssh-key: ${{ secrets.MEMSEARCH_UPSTREAM_SYNC_KEY }}
+
+      - name: Merge upstream main
         id: sync
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          ahead="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...zilliztech:main" --jq .ahead_by)"
-          if [ "$ahead" -eq 0 ]; then
+          git remote add upstream https://github.com/zilliztech/memsearch.git
+          git fetch --no-tags upstream main
+          upstream_sha="$(git rev-parse upstream/main)"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor upstream/main HEAD; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No new upstream commits." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # The dedicated fork-sync API needs contents:write and preserves
-          # fork-only commits. A merge conflict fails without force-pushing.
-          gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
-          synced_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit upstream/main
+          git push origin HEAD:main
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "Merged $ahead upstream commits into fork main at $synced_sha." >> "$GITHUB_STEP_SUMMARY"
-      - name: Run CI on the updated fork
-        if: steps.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+          echo "Merged upstream $upstream_sha into fork main at $(git rev-parse HEAD)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run CI for a manual check without new commits
+        if: steps.sync.outputs.changed != 'true' && github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          # A push with GITHUB_TOKEN does not trigger push workflows.
-          # Explicit dispatch creates CI runs on the updated main commit.
+          # SSH pushes start the normal push workflows on the new commit.
+          # Explicit dispatch is only needed for a manual no-change check.
           gh workflow run test.yml --repo "$GITHUB_REPOSITORY" --ref main
           gh workflow run lint.yml --repo "$GITHUB_REPOSITORY" --ref main
           echo "Dispatched Test and Lint on main. Their results are separate from sync success." >> "$GITHUB_STEP_SUMMARY"
