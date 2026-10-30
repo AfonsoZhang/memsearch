@@ -148,8 +148,15 @@ def test_codex_stop_hook_filters_host_envelope_from_journal(tmp_path: Path) -> N
     journal_files: list[Path] = []
     while time.monotonic() < deadline:
         journal_files = list((memsearch_dir / "memory").glob("*.md"))
-        if journal_files and journal_files[0].stat().st_size:
-            break
+        if journal_files:
+            # The detached worker writes the header before the body. A
+            # non-empty file does not mean both transcript entries are ready.
+            partial = journal_files[0].read_text(encoding="utf-8")
+            if (
+                "[User]: Remember the synthetic orchard marker." in partial
+                and "[Codex]: The synthetic orchard marker is recorded." in partial
+            ):
+                break
         time.sleep(0.05)
 
     assert len(journal_files) == 1
