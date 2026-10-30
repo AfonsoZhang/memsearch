@@ -2,7 +2,7 @@ name: Sync upstream
 
 on:
   schedule:
-    - cron: "23 1 * * *" # 09:23 Asia/Shanghai
+    - cron: "0 0 * * *" # 08:00 Asia/Shanghai
   workflow_dispatch:
 
 permissions:
