@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: fork-upstream-sync
@@ -46,16 +45,3 @@ jobs:
           git push origin HEAD:main
           echo "changed=true" >> "$GITHUB_OUTPUT"
           echo "Merged upstream $upstream_sha into fork main at $(git rev-parse HEAD)." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Run CI for a manual check without new commits
-        if: steps.sync.outputs.changed != 'true' && github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # SSH pushes start the normal push workflows on the new commit.
-          # Explicit dispatch is only needed for a manual no-change check.
-          gh workflow run test.yml --repo "$GITHUB_REPOSITORY" --ref main
-          gh workflow run lint.yml --repo "$GITHUB_REPOSITORY" --ref main
-          echo "Dispatched Test and Lint on main. Their results are separate from sync success." >> "$GITHUB_STEP_SUMMARY"
