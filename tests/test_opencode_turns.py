@@ -823,6 +823,7 @@ def test_recall_queries_serialize_with_capture_and_each_other(fixture, tmp_path,
     from tests.opencode_v2_fixtures import SCRIPTS
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Windows Path.home()
     command = tmp_path / "exclusive-query.py"
     command.write_text(
         "import os,time\nfrom pathlib import Path\n"
@@ -883,6 +884,7 @@ def test_two_roots_share_cli_lock_but_infer_concurrently(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows Path.home()
     command = tmp_path / "exclusive-cli.py"
     command.write_text(
         "import fcntl,os,sys,time\nfrom pathlib import Path\n"
@@ -964,6 +966,7 @@ def test_cli_lock_cancellation_releases_waiter_owner_and_child(tmp_path, monkeyp
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows Path.home()
     command = tmp_path / "blocking-cli.py"
     command.write_text(
         "import fcntl,os,time\nfrom pathlib import Path\n"
@@ -1034,3 +1037,38 @@ def test_cli_lock_cancellation_releases_waiter_owner_and_child(tmp_path, monkeyp
         assert stdout.strip() == "completed"
         with pytest.raises(ProcessLookupError):
             os.kill(child_pid, 0)
+
+
+def test_lock_released_on_process_exit(tmp_path):
+    from tests.opencode_v2_fixtures import SCRIPTS
+
+    lock = tmp_path / "shared.lock"
+    command = [
+        sys.executable,
+        "-u",
+        "-c",
+        (
+            "from capture import acquire_lock; from pathlib import Path; import sys; "
+            "print('starting'); handle = acquire_lock(Path(sys.argv[1])); print('acquired'); sys.stdin.read()"
+        ),
+        str(lock),
+    ]
+    with subprocess.Popen(command, cwd=SCRIPTS, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) as owner:
+        try:
+            assert owner.stdout.readline().strip() == "starting"
+            assert owner.stdout.readline().strip() == "acquired"
+            with subprocess.Popen(
+                command, cwd=SCRIPTS, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True
+            ) as waiter:
+                try:
+                    assert waiter.stdout.readline().strip() == "starting"
+                    with pytest.raises(subprocess.TimeoutExpired):
+                        waiter.wait(timeout=0.2)
+                    owner.kill()
+                    owner.wait(timeout=5)
+                    output, _ = waiter.communicate(timeout=5)
+                    assert output.strip() == "acquired" and waiter.returncode == 0
+                finally:
+                    waiter.kill()
+        finally:
+            owner.kill()
